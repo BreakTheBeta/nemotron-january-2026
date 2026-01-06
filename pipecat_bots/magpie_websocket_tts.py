@@ -41,7 +41,11 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.tts_service import WebsocketTTSService
 
 # Import the continue frame for LLM/TTS synchronization
-from frames import ChunkedLLMContinueGenerationFrame
+# Use try/except to support both local execution and Modal deployment
+try:
+    from pipecat_bots.frames import ChunkedLLMContinueGenerationFrame
+except ModuleNotFoundError:
+    from frames import ChunkedLLMContinueGenerationFrame
 
 try:
     from websockets.asyncio.client import connect as websocket_connect
