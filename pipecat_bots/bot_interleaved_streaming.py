@@ -27,6 +27,7 @@ from io import BytesIO
 from pathlib import Path
 
 from dotenv import load_dotenv
+from huggingface_hub import hf_hub_download
 from loguru import logger
 
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
@@ -81,6 +82,12 @@ RECORDINGS_DIR = Path(__file__).parent.parent / "recordings"
 # VAD configuration - used by both VAD analyzer and V2V metrics
 VAD_STOP_SECS = 0.2
 
+# Smart Turn v3.2 model from HuggingFace
+SMART_TURN_MODEL_PATH = hf_hub_download(
+    repo_id="pipecat-ai/smart-turn-v3",
+    filename="smart-turn-v3.2-cpu.onnx"
+)
+
 
 def ensure_recordings_dir() -> Path:
     """Create recordings directory if it doesn't exist."""
@@ -114,19 +121,19 @@ transport_params = {
         audio_in_enabled=True,
         audio_out_enabled=True,
         vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=VAD_STOP_SECS)),
-        turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
+        turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(smart_turn_model_path=SMART_TURN_MODEL_PATH)),
     ),
     "twilio": lambda: FastAPIWebsocketParams(
         audio_in_enabled=True,
         audio_out_enabled=True,
         vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=VAD_STOP_SECS)),
-        turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
+        turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(smart_turn_model_path=SMART_TURN_MODEL_PATH)),
     ),
     "webrtc": lambda: TransportParams(
         audio_in_enabled=True,
         audio_out_enabled=True,
         vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=VAD_STOP_SECS)),
-        turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams()),
+        turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(smart_turn_model_path=SMART_TURN_MODEL_PATH)),
     ),
 }
 
