@@ -11,7 +11,7 @@ Run locally on an NVIDIA DGX Spark or RTX 5090. Or deploy to the cloud with Moda
 
 Accompanying blog posts:
 - [Nemotron Speech ASR Open Source Model Launch Post](https://huggingface.co/blog/nvidia/nemotron-speech-asr-scaling-voice-agents)
-- [More About Voice Agent Architectures and This Agent's Design]()
+- [More About Voice Agent Architectures and This Agent's Design](https://www.daily.co/blog/building-voice-agents-with-nvidia-open-models/)
 
 ## Quick start - Run everything locally (DGX Spark or RTX 5090)
 
