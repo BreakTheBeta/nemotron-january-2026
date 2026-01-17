@@ -334,9 +334,11 @@ RUN uv pip install --no-cache \
     partial-json-parser
 
 # vLLM - main branch, 2025-12-21
-# Same commit as working vllm:cuda13-full container (supports Nemotron-H relu2_no_mul)
-ARG VLLM_COMMIT=bb80f69bc98cbf062bf030cb11185f7ba526e28a
-ARG VLLM_CACHE_BUSTER=v1
+# NOTE: Newer commits (e.g., 268b1c55a with PR #31533) cause hangs on Blackwell GB10
+# This commit works with NVFP4 models (FP8 produces garbage due to MoE accuracy bugs)
+# Reference: https://github.com/vllm-project/vllm/issues/31609
+ARG VLLM_COMMIT=bb80f69bc42f4dd4c6a1f50c9e970ab05c6edf56
+ARG VLLM_CACHE_BUSTER=v3
 
 WORKDIR /build
 
@@ -345,6 +347,15 @@ RUN git clone https://github.com/vllm-project/vllm.git && \
     cd vllm && git checkout ${VLLM_COMMIT}
 
 WORKDIR /build/vllm
+
+# CRITICAL FIX: Patch CMakeLists.txt for SM120 (Blackwell GB10) MOE kernel support
+# Without this patch, FP8 quantized models hang because cutlass MOE kernels
+# aren't compiled for sm_120/sm_121. The model loads into GPU memory but
+# kernel initialization fails silently.
+# Reference: https://github.com/eelbaz/dgx-spark-vllm-setup/blob/main/CRITICAL_FIX_ANALYSIS.md
+RUN sed -i 's/cuda_archs_loose_intersection(SCALED_MM_ARCHS "10.0f;11.0f"/cuda_archs_loose_intersection(SCALED_MM_ARCHS "10.0f;11.0f;12.0f"/g' CMakeLists.txt && \
+    echo "=== Verifying SM120 patch applied ===" && \
+    grep -n "12.0f" CMakeLists.txt | head -5
 
 # Set vLLM build environment
 ENV VLLM_TARGET_DEVICE="cuda"
@@ -369,6 +380,12 @@ RUN ARCH=$(uname -m) && \
     fi && \
     echo "=== Building vLLM for $ARCH with CUDA arch $TORCH_CUDA_ARCH_LIST ===" && \
     uv pip install --no-cache -e . --no-build-isolation
+
+# Apply PR #31607 patches for SM 12.1 (Blackwell GB10) FP8 support
+# Without these patches, FP8 models hang during kernel initialization on DGX Spark.
+# Reference: https://github.com/vllm-project/vllm/pull/31607
+COPY patches/apply-vllm-pr31607.py /tmp/apply-vllm-pr31607.py
+RUN VLLM_DIR=/build/vllm python3 /tmp/apply-vllm-pr31607.py
 
 # Reinstall our custom PyTorch (vLLM may have replaced it)
 # Also remove torchvision/torchaudio which vLLM may have installed
