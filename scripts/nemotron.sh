@@ -14,7 +14,7 @@
 #   ./scripts/nemotron.sh help                Show this help message
 #
 # Start Options:
-#   --mode MODE          LLM mode: llamacpp-q8 (default), llamacpp-q4, vllm
+#   --mode MODE          LLM mode: llamacpp-q8 (default), llamacpp-q4, vllm, vllm-fp8
 #   --model PATH         Path to model file (GGUF for llamacpp, HF model for vllm)
 #   --no-asr             Disable ASR service
 #   --no-tts             Disable TTS service
@@ -51,6 +51,7 @@ DETACH="true"
 DEFAULT_Q8_MODEL="$(find "$HOME/.cache/huggingface/hub/models--unsloth--Nemotron-3-Nano-30B-A3B-GGUF" -name "*Q8*.gguf" 2>/dev/null | head -1)"
 DEFAULT_Q4_MODEL="$(find "$HOME/.cache/huggingface/hub/models--unsloth--Nemotron-3-Nano-30B-A3B-GGUF" -name "*Q4*.gguf" 2>/dev/null | head -1)"
 DEFAULT_VLLM_MODEL="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+DEFAULT_VLLM_FP8_MODEL="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8"
 
 # HuggingFace model cache paths for ASR and TTS (auto-downloaded on first run)
 HF_CACHE_ASR="$HOME/.cache/huggingface/hub/models--nvidia--nemotron-speech-streaming-en-0.6b"
@@ -85,7 +86,7 @@ Commands:
   help                Show this help message
 
 Start Options:
-  --mode MODE         LLM mode: llamacpp-q8 (default), llamacpp-q4, vllm
+  --mode MODE         LLM mode: llamacpp-q8 (default), llamacpp-q4, vllm, vllm-fp8
   --model PATH        Path to model (GGUF for llamacpp, HF id/path for vllm)
   --no-asr            Disable ASR service
   --no-tts            Disable TTS service
@@ -99,6 +100,7 @@ Examples:
 
   # Start with vLLM
   ./scripts/nemotron.sh start --mode vllm --model nvidia/model-name
+  ./scripts/nemotron.sh start --mode vllm-fp8 --model nvidia/model-name
 
   # Start ASR + TTS only (no LLM)
   ./scripts/nemotron.sh start --no-llm
@@ -252,9 +254,15 @@ cmd_start() {
                     echo "Using default vLLM model: $VLLM_MODEL"
                 fi
                 ;;
+            vllm-fp8)
+                if [[ -z "$VLLM_MODEL" ]]; then
+                    VLLM_MODEL="$DEFAULT_VLLM_FP8_MODEL"
+                    echo "Using default vLLM FP8 model: $VLLM_MODEL"
+                fi
+                ;;
             *)
                 echo "ERROR: Unknown LLM mode: $LLM_MODE"
-                echo "Valid modes: llamacpp-q8, llamacpp-q4, vllm"
+                echo "Valid modes: llamacpp-q8, llamacpp-q4, vllm, vllm-fp8"
                 exit 1
                 ;;
         esac
@@ -263,7 +271,13 @@ cmd_start() {
     # Detect if models need to be downloaded (first run)
     # If ASR or TTS models are not cached, use a longer timeout for download
     MODELS_TO_DOWNLOAD=""
-    SERVICE_TIMEOUT="${SERVICE_TIMEOUT:-60}"
+    if [[ -z "${SERVICE_TIMEOUT:-}" ]]; then
+        if [[ "$LLM_MODE" == vllm* ]]; then
+            SERVICE_TIMEOUT=900
+        else
+            SERVICE_TIMEOUT=60
+        fi
+    fi
 
     if [[ "$ENABLE_ASR" == "true" ]] && [[ ! -d "$HF_CACHE_ASR" ]]; then
         MODELS_TO_DOWNLOAD="ASR"
@@ -305,7 +319,7 @@ cmd_start() {
 
     # Build docker run command
     # Use host network for vLLM mode to avoid DNS issues with HuggingFace
-    if [[ "$LLM_MODE" == "vllm" ]]; then
+    if [[ "$LLM_MODE" == vllm* ]]; then
         DOCKER_ARGS=(
             run
             --name "$CONTAINER_NAME"
@@ -318,6 +332,9 @@ cmd_start() {
             -e "ENABLE_TTS=$ENABLE_TTS"
             -e "ENABLE_LLM=$ENABLE_LLM"
             -e "LLM_MODE=$LLM_MODE"
+            -e "HF_HOME=/root/.cache/huggingface"
+            -e "HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}"
+            -e "HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET:-1}"
         )
     else
         DOCKER_ARGS=(
@@ -334,6 +351,9 @@ cmd_start() {
             -e "ENABLE_TTS=$ENABLE_TTS"
             -e "ENABLE_LLM=$ENABLE_LLM"
             -e "LLM_MODE=$LLM_MODE"
+            -e "HF_HOME=/root/.cache/huggingface"
+            -e "HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}"
+            -e "HF_HUB_DISABLE_XET=${HF_HUB_DISABLE_XET:-1}"
         )
     fi
 
@@ -341,6 +361,17 @@ cmd_start() {
     if [[ -n "$HUGGINGFACE_ACCESS_TOKEN" ]]; then
         DOCKER_ARGS+=(-e "HUGGINGFACE_ACCESS_TOKEN=$HUGGINGFACE_ACCESS_TOKEN")
         DOCKER_ARGS+=(-e "HF_TOKEN=$HUGGINGFACE_ACCESS_TOKEN")
+    fi
+
+    # vLLM-specific overrides (optional)
+    if [[ -n "${VLLM_ATTENTION_BACKEND:-}" ]]; then
+        DOCKER_ARGS+=(-e "VLLM_ATTENTION_BACKEND=$VLLM_ATTENTION_BACKEND")
+    fi
+    if [[ -n "${VLLM_MAX_MODEL_LEN:-}" ]]; then
+        DOCKER_ARGS+=(-e "VLLM_MAX_MODEL_LEN=$VLLM_MAX_MODEL_LEN")
+    fi
+    if [[ -n "${VLLM_GPU_MEMORY_UTILIZATION:-}" ]]; then
+        DOCKER_ARGS+=(-e "VLLM_GPU_MEMORY_UTILIZATION=$VLLM_GPU_MEMORY_UTILIZATION")
     fi
 
     # Service timeout (longer for first-run model downloads)
@@ -367,7 +398,7 @@ cmd_start() {
                 fi
                 DOCKER_ARGS+=(-e "LLAMA_MODEL=$CONTAINER_MODEL_PATH")
                 ;;
-            vllm)
+            vllm|vllm-fp8)
                 DOCKER_ARGS+=(-e "VLLM_MODEL=$VLLM_MODEL")
                 ;;
         esac

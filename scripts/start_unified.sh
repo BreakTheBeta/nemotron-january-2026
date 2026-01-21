@@ -11,13 +11,15 @@
 #   ENABLE_TTS   - "true" (default) or "false" - Enable TTS server
 #
 # LLM Configuration:
-#   LLM_MODE                      - "llamacpp-q8" (default), "llamacpp-q4", or "vllm"
+#   LLM_MODE                      - "llamacpp-q8" (default), "llamacpp-q4", "vllm", or "vllm-fp8"
 #   LLAMA_MODEL                   - Path to GGUF model (required for llamacpp modes)
 #   LLAMA_PARALLEL                - Number of parallel slots (default: 1 for buffered LLM mode)
 #   LLAMA_CTX_SIZE                - Context size (default: 16384, enough for multi-turn voice)
 #   LLAMA_REASONING_BUDGET        - Thinking mode for Q4: 0=disabled, -1=unlimited (default: 0)
-#   VLLM_MODEL                    - Path to HF model dir (required for vllm mode)
+#   VLLM_MODEL                    - Path to HF model dir (required for vllm modes)
 #   VLLM_GPU_MEMORY_UTILIZATION   - GPU memory fraction (default: 0.60)
+#   VLLM_MAX_MODEL_LEN            - Max model length (default: 16384)
+#   VLLM_ATTENTION_BACKEND        - Attention backend (default: TRITON_ATTN)
 #
 # General:
 #   SERVICE_TIMEOUT               - Seconds to wait for each service to start (default: 60)
@@ -34,6 +36,7 @@
 #
 #   # vLLM mode
 #   LLM_MODE=vllm VLLM_MODEL=/path/to/model bash scripts/start_unified.sh
+#   LLM_MODE=vllm-fp8 VLLM_MODEL=/path/to/model bash scripts/start_unified.sh
 #
 #   # LLM only (no ASR/TTS)
 #   ENABLE_ASR=false ENABLE_TTS=false LLAMA_MODEL=/path/to/model.gguf bash scripts/start_unified.sh
@@ -60,6 +63,8 @@ LLAMA_PARALLEL="${LLAMA_PARALLEL:-1}"
 LLAMA_CTX_SIZE="${LLAMA_CTX_SIZE:-16384}"
 LLAMA_REASONING_BUDGET="${LLAMA_REASONING_BUDGET:-0}"
 VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.60}"
+VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-16384}"
+VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-TRITON_ATTN}"
 
 # Log directory
 LOG_DIR="/var/log/nemotron"
@@ -106,7 +111,7 @@ if [ "$ENABLE_LLM" = "true" ]; then
             echo "  llama.cpp Parallel: $LLAMA_PARALLEL"
             echo "  llama.cpp Context: $LLAMA_CTX_SIZE"
             ;;
-        vllm)
+        vllm|vllm-fp8)
             if [ -z "$VLLM_MODEL" ]; then
                 echo "ERROR: VLLM_MODEL must be set for vllm mode"
                 echo "Example: VLLM_MODEL=nvidia/Llama-3.1-Nemotron-Nano-8B-v1"
@@ -114,10 +119,12 @@ if [ "$ENABLE_LLM" = "true" ]; then
             fi
             echo "  vLLM Model: $VLLM_MODEL"
             echo "  vLLM GPU Utilization: $VLLM_GPU_MEMORY_UTILIZATION"
+            echo "  vLLM Max Model Len: $VLLM_MAX_MODEL_LEN"
+            echo "  vLLM Attention Backend: $VLLM_ATTENTION_BACKEND"
             ;;
         *)
             echo "ERROR: Unknown LLM_MODE: $LLM_MODE"
-            echo "  Valid modes: llamacpp-q8, llamacpp-q4, vllm"
+            echo "  Valid modes: llamacpp-q8, llamacpp-q4, vllm, vllm-fp8"
             exit 1
             ;;
     esac
@@ -328,6 +335,22 @@ if [ "$ENABLE_LLM" = "true" ]; then
             ;;
         vllm)
             echo "  Mode: vLLM (BF16 full-precision inference)"
+            if [[ "${VLLM_ATTENTION_BACKEND}" =~ ^(AUTO|auto|unset|UNSET)$ ]]; then
+                python -m vllm.entrypoints.openai.api_server \
+                    --model "${VLLM_MODEL}" \
+                    --host 0.0.0.0 \
+                    --port 8000 \
+                    --dtype bfloat16 \
+                    --trust-remote-code \
+                    --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION}" \
+                    --max-num-seqs 1 \
+                    --max-model-len "${VLLM_MAX_MODEL_LEN}" \
+                    --enforce-eager \
+                    --disable-log-requests \
+                    --enable-prefix-caching \
+                    > "$LOG_DIR/llm.log" 2>&1 &
+            else
+                VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND}" \
             python -m vllm.entrypoints.openai.api_server \
                 --model "${VLLM_MODEL}" \
                 --host 0.0.0.0 \
@@ -336,11 +359,50 @@ if [ "$ENABLE_LLM" = "true" ]; then
                 --trust-remote-code \
                 --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION}" \
                 --max-num-seqs 1 \
-                --max-model-len 100000 \
+                --max-model-len "${VLLM_MAX_MODEL_LEN}" \
                 --enforce-eager \
                 --disable-log-requests \
                 --enable-prefix-caching \
                 > "$LOG_DIR/llm.log" 2>&1 &
+            fi
+            LLM_PID=$!
+            ;;
+        vllm-fp8)
+            echo "  Mode: vLLM FP8 (ModelOpt FP8 checkpoint)"
+            if [[ "${VLLM_ATTENTION_BACKEND}" =~ ^(AUTO|auto|unset|UNSET)$ ]]; then
+                python -m vllm.entrypoints.openai.api_server \
+                    --model "${VLLM_MODEL}" \
+                    --host 0.0.0.0 \
+                    --port 8000 \
+                    --dtype bfloat16 \
+                    --kv-cache-dtype fp8 \
+                    --mamba-ssm-cache-dtype float32 \
+                    --trust-remote-code \
+                    --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION}" \
+                    --max-num-seqs 1 \
+                    --max-model-len "${VLLM_MAX_MODEL_LEN}" \
+                    --enforce-eager \
+                    --disable-log-requests \
+                    --enable-prefix-caching \
+                    > "$LOG_DIR/llm.log" 2>&1 &
+            else
+                VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND}" \
+            python -m vllm.entrypoints.openai.api_server \
+                --model "${VLLM_MODEL}" \
+                --host 0.0.0.0 \
+                --port 8000 \
+                --dtype bfloat16 \
+                --kv-cache-dtype fp8 \
+                --mamba-ssm-cache-dtype float32 \
+                --trust-remote-code \
+                --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION}" \
+                --max-num-seqs 1 \
+                --max-model-len "${VLLM_MAX_MODEL_LEN}" \
+                --enforce-eager \
+                --disable-log-requests \
+                --enable-prefix-caching \
+                > "$LOG_DIR/llm.log" 2>&1 &
+            fi
             LLM_PID=$!
             ;;
     esac
