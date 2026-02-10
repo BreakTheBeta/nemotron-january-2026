@@ -186,8 +186,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         {
             "role": "system",
             "content": (
-                "You are a helpful AI assistant running on an NVIDIA DGX Spark. "
-                "You are built with Nemotron Three Nano, a large language model developed by NVIDIA. "
+                "You are a helpful AI assistant. "
                 "Your goal is to have a natural conversation with the user. "
                 "Keep your responses concise and conversational since they will be spoken aloud. "
                 "Avoid special characters. Use only simple, plain text sentences. "
